@@ -3,14 +3,17 @@
 	MIT Licence.
 	https://github.com/HubKing/LinkBrightness
  */
+using Microsoft.Win32.SafeHandles;
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Management;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -47,6 +50,8 @@ namespace LinkBrightness
 		static bool opt_hide_on_minimize = false;
 		static bool opt_verbose = false;
 
+		static bool is_console_created = false;
+
 		public static void ShowUsage()
 		{
 			Console.WriteLine(
@@ -64,12 +69,13 @@ namespace LinkBrightness
 				"group-style minimize command (Win+D, Win+M, etc), and will remain minimized " +
 				"during a reversal.)\n" +
 				"\n" +
-				"[/hide_on_start]\n" +
-				"Hide the console window on start. This only works if " + ProgName + " is " +
-				"running in its own console window. (Note when this option is enabled the " +
-				"console window may flicker on start because it cannot be hidden until after " +
-				"it has been created. You can mitigate that by running " + ProgName +
-				" /hide_on_start from a shortcut with Run properties set to 'Minimized'.)\n" +
+				"[/show_on_start]\n" +
+				"Show console window on start." +
+				//"This only works if " + ProgName + " is " +
+				//"running in its own console window. (Note when this option is enabled the " +
+				//"console window may flicker on start because it cannot be hidden until after " +
+				//"it has been created. You can mitigate that by running " + ProgName +
+				//" /hide_on_start from a shortcut with Run properties set to 'Minimized'.)\n" +
 				"\n" +
 				"[/verbose]\n" +
 				"Be more verbose, such as show every brightness event.\n"
@@ -91,6 +97,29 @@ namespace LinkBrightness
 			}
 		}
 
+		[DllImport("kernel32.dll", EntryPoint = "GetStdHandle", SetLastError = true, CharSet = CharSet.Auto, CallingConvention = CallingConvention.StdCall)]
+		public static extern IntPtr GetStdHandle(int nStdHandle);
+
+		[DllImport("kernel32.dll", EntryPoint = "AllocConsole", SetLastError = true, CharSet = CharSet.Auto, CallingConvention = CallingConvention.StdCall)]
+		public static extern int AllocConsole();
+
+		private const int STD_OUTPUT_HANDLE = -11;
+		private const int MY_CODE_PAGE = 437;
+
+		static void CreateConsole()
+		{
+			AllocConsole();
+			IntPtr stdHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+			SafeFileHandle safeFileHandle = new SafeFileHandle(stdHandle, true);
+			FileStream fileStream = new FileStream(safeFileHandle, FileAccess.Write);
+			Encoding encoding = System.Text.Encoding.GetEncoding(MY_CODE_PAGE);
+			StreamWriter standardOutput = new StreamWriter(fileStream, encoding);
+			standardOutput.AutoFlush = true;
+			Console.SetOut(standardOutput);
+			is_console_created = true;
+		}
+
+
 		public static int Main(string[] args)
 		{
 			const int EXIT_SUCCESS = 0, EXIT_FAILURE = 1;
@@ -101,6 +130,9 @@ namespace LinkBrightness
 			we_own_the_console = ((GetConsoleProcessList(new uint[1], 1) == 1) &&
 				(Process.GetCurrentProcess().MainWindowHandle == GetConsoleWindow()));
 
+			// changed defaults
+			opt_hide_on_start = true;
+
 			// Parse arguments
 			for (int i = 0; i < args.Length; ++i)
 			{
@@ -109,8 +141,11 @@ namespace LinkBrightness
 					SoftPause();
 					return EXIT_SUCCESS;
 				}
-				else if (args[i] == "/hide_on_start")
-					opt_hide_on_start = true;
+				else if (args[i] == "/show_on_start")
+				{
+					opt_hide_on_start = false;
+					CreateConsole();
+				}
 				else if (args[i] == "/hide_on_minimize")
 					opt_hide_on_minimize = true;
 				else if (args[i] == "/verbose")
@@ -199,7 +234,8 @@ namespace LinkBrightness
 			}
 
 			string title = ProgName + ": Sync AC & DC brightness";
-			Console.Title = title;
+			if (is_console_created)
+				Console.Title = title;
 			Console.WriteLine(title);
 			Console.WriteLine("");
 			Console.WriteLine("Use option /? for usage information.");
@@ -219,8 +255,9 @@ namespace LinkBrightness
 				},
 				null, -1, false);
 
+			Tray_Create();
+
 			if (we_own_the_console) {
-				Tray_Create();
 
 				console_ctrl_delegate = new ConsoleCtrlDelegate(ConsoleCtrlHandlerRoutine);
 				SetConsoleCtrlHandler(console_ctrl_delegate, true);
@@ -568,10 +605,18 @@ namespace LinkBrightness
 
 		private static void Tray_DoubleClick(object sender, EventArgs e)
 		{
+			bool just_created = false;
+			if (!is_console_created)
+			{
+				CreateConsole();
+				just_created = true;
+			}
+				
+
 			IntPtr console = GetConsoleWindow();
 
 			if (console != NULL) {
-				if (IsWindowVisible(console)) {
+				if (IsWindowVisible(console) && !just_created) {
 					MinimizeAndHideWindow(console);
 				}
 				else {
